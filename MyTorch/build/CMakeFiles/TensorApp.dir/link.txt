@@ -1,0 +1,1 @@
+/usr/bin/c++     CMakeFiles/TensorApp.dir/main.cpp.o CMakeFiles/TensorApp.dir/tensor.cpp.o  -o TensorApp 
