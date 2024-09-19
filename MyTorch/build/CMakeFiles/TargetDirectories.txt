@@ -1,3 +1,0 @@
-/home/yuantian0221/Pytorch_proj/MyTorch/build/CMakeFiles/rebuild_cache.dir
-/home/yuantian0221/Pytorch_proj/MyTorch/build/CMakeFiles/edit_cache.dir
-/home/yuantian0221/Pytorch_proj/MyTorch/build/CMakeFiles/TensorApp.dir
