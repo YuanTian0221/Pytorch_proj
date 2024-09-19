@@ -1,289 +1,146 @@
 #ifndef TENSOR_IMPL_H
 #define TENSOR_IMPL_H
 
-#include "tensor.h"
-#include <iostream>
-#include <numeric>
-#include <algorithm>
-#include <cassert>
-#include <stdexcept>
+#include "tensor.h"  // 包含声明文件
 
-// Tensor 类构造函数实现
+// 构造函数：初始化张量数据、形状、步幅等
 template <typename T>
-Tensor<T>::Tensor(const std::vector<T>& data, const std::vector<size_t>& shape, bool requires_grad,
-                  const std::vector<std::shared_ptr<Tensor<T>>>& children, const std::string& op)
-    : data(data), shape(shape), requires_grad(requires_grad), _prev(children), _op(op) {
+Tensor<T>::Tensor(const std::vector<T>& data, 
+                  const std::vector<size_t>& shape, 
+                  bool requires_grad, 
+                  bool device)
+    : data(data), shape(shape), requires_grad(requires_grad), device(device) {
+    // 计算 strides，用于一维索引转换
     strides.resize(shape.size());
-    size_t stride = 1;
-    for (int i = shape.size() - 1; i >= 0; --i) {
-        strides[i] = stride;
-        stride *= shape[i];
+    strides.back() = 1;
+    for (int i = shape.size() - 2; i >= 0; --i) {
+        strides[i] = strides[i + 1] * shape[i + 1];
     }
+
+    // 如果需要计算梯度，则初始化 grad 与 data 同大小
     if (requires_grad) {
-        grad = std::vector<T>(data.size(), static_cast<T>(0));
+        grad.resize(data.size(), static_cast<T>(0));
     }
 }
 
+// 标量构造函数
 template <typename T>
-Tensor<T>::Tensor(T value, bool requires_grad)
-    : data({value}), shape({1}), requires_grad(requires_grad) {
-    strides = {1};
-    if (requires_grad) {
-        grad = std::vector<T>(1, static_cast<T>(0));
+Tensor<T>::Tensor(T value, bool requires_grad, bool device)
+    : Tensor(std::vector<T>{value}, {1}, requires_grad, device) {}
+
+// 设置创建者 (用于自动微分追踪)
+template <typename T>
+void Tensor<T>::set_creator(const std::shared_ptr<Function<T>>& func) {
+    creator = func;
+
+    // 计算该张量的 generation 值
+    // 它应该是所有输入张量中最大的 generation + 1
+    /*
+    int max_generation = 0;
+    for (const auto& input : func->inputs) {
+        if (input) {  // 确保输入不为空
+            max_generation = std::max(max_generation, input->generation);
+        }
     }
+    generation = max_generation + 1;  // 新的张量 generation = 前驱的最大 generation + 1
+    */
 }
 
-// 元素访问
+// 张量元素访问操作符 (支持多维索引)
 template <typename T>
 T& Tensor<T>::operator[](const std::vector<size_t>& indices) {
     assert(indices.size() == shape.size());
-    size_t offset = 0;
+    size_t index = 0;
     for (size_t i = 0; i < indices.size(); ++i) {
-        assert(indices[i] < shape[i]);
-        offset += strides[i] * indices[i];
+        index += strides[i] * indices[i];
     }
-    return data[offset];
+    return data[index];
 }
 
 template <typename T>
 const T& Tensor<T>::operator[](const std::vector<size_t>& indices) const {
     assert(indices.size() == shape.size());
-    size_t offset = 0;
+    size_t index = 0;
     for (size_t i = 0; i < indices.size(); ++i) {
-        assert(indices[i] < shape[i]);
-        offset += strides[i] * indices[i];
+        index += strides[i] * indices[i];
     }
-    return data[offset];
+    return data[index];
 }
 
-// 加法运算
-template <typename T>
-std::shared_ptr<Tensor<T>> Tensor<T>::operator+(const std::shared_ptr<Tensor<T>>& other) {
-    std::vector<size_t> result_shape = broadcast_shapes(this->shape, other->shape);
-    size_t total_size = std::accumulate(result_shape.begin(), result_shape.end(), 1, std::multiplies<size_t>());
-    std::vector<T> result_data(total_size);
-    
-    for (size_t i = 0; i < total_size; ++i) {
-        std::vector<size_t> idx(result_shape.size());
-        size_t temp = i;
-        for (int j = result_shape.size() - 1; j >= 0; --j) {
-            idx[j] = temp % result_shape[j];
-            temp /= result_shape[j];
-        }
-        T a = this->data.size() == 1 ? this->data[0] : (*this)[idx];
-        T b = other->data.size() == 1 ? other->data[0] : (*other)[idx];
-        result_data[i] = a + b;
-    }
-    
-    auto out = std::make_shared<Tensor<T>>(result_data, result_shape, this->requires_grad || other->requires_grad,
-                                           std::vector<std::shared_ptr<Tensor<T>>>{this->shared_from_this(), other}, "+");
-    
-    out->_backward = [this, other, out]() {
-        if (this->requires_grad) {
-            for (size_t i = 0; i < this->data.size(); ++i) {
-                this->grad[i] += out->grad[i];
-            }
-        }
-        if (other->requires_grad) {
-            for (size_t i = 0; i < other->data.size(); ++i) {
-                other->grad[i] += out->grad[i];
-            }
-        }
-    };
-    
-    return out;
-}
 
-// 减法运算
-template <typename T>
-std::shared_ptr<Tensor<T>> Tensor<T>::operator-(const std::shared_ptr<Tensor<T>>& other) {
-    std::vector<size_t> result_shape = broadcast_shapes(this->shape, other->shape);
-    size_t total_size = std::accumulate(result_shape.begin(), result_shape.end(), 1, std::multiplies<size_t>());
-    std::vector<T> result_data(total_size);
-    
-    for (size_t i = 0; i < total_size; ++i) {
-        std::vector<size_t> idx(result_shape.size());
-        size_t temp = i;
-        for (int j = result_shape.size() - 1; j >= 0; --j) {
-            idx[j] = temp % result_shape[j];
-            temp /= result_shape[j];
-        }
-        T a = this->data.size() == 1 ? this->data[0] : (*this)[idx];
-        T b = other->data.size() == 1 ? other->data[0] : (*other)[idx];
-        result_data[i] = a - b;
-    }
-    
-    auto out = std::make_shared<Tensor<T>>(result_data, result_shape, this->requires_grad || other->requires_grad,
-                                           std::vector<std::shared_ptr<Tensor<T>>>{this->shared_from_this(), other}, "-");
-    
-    out->_backward = [this, other, out]() {
-        if (this->requires_grad) {
-            for (size_t i = 0; i < this->data.size(); ++i) {
-                this->grad[i] += out->grad[i];
-            }
-        }
-        if (other->requires_grad) {
-            for (size_t i = 0; i < other->data.size(); ++i) {
-                other->grad[i] -= out->grad[i];
-            }
-        }
-    };
-    
-    return out;
-}
-
-// 乘法运算
-template <typename T>
-std::shared_ptr<Tensor<T>> Tensor<T>::operator*(const std::shared_ptr<Tensor<T>>& other) {
-    std::vector<size_t> result_shape = broadcast_shapes(this->shape, other->shape);
-    size_t total_size = std::accumulate(result_shape.begin(), result_shape.end(), 1, std::multiplies<size_t>());
-    std::vector<T> result_data(total_size);
-    
-    for (size_t i = 0; i < total_size; ++i) {
-        std::vector<size_t> idx(result_shape.size());
-        size_t temp = i;
-        for (int j = result_shape.size() - 1; j >= 0; --j) {
-            idx[j] = temp % result_shape[j];
-            temp /= result_shape[j];
-        }
-        T a = this->data.size() == 1 ? this->data[0] : (*this)[idx];
-        T b = other->data.size() == 1 ? other->data[0] : (*other)[idx];
-        result_data[i] = a * b;
-    }
-    
-    auto out = std::make_shared<Tensor<T>>(result_data, result_shape, this->requires_grad || other->requires_grad,
-                                           std::vector<std::shared_ptr<Tensor<T>>>{this->shared_from_this(), other}, "*");
-    
-    out->_backward = [this, other, out]() {
-        if (this->requires_grad) {
-            for (size_t i = 0; i < this->data.size(); ++i) {
-                this->grad[i] += other->data[i] * out->grad[i];
-            }
-        }
-        if (other->requires_grad) {
-            for (size_t i = 0; i < other->data.size(); ++i) {
-                other->grad[i] += this->data[i] * out->grad[i];
-            }
-        }
-    };
-    
-    return out;
-}
-
-// 除法运算
-template <typename T>
-std::shared_ptr<Tensor<T>> Tensor<T>::operator/(const std::shared_ptr<Tensor<T>>& other) {
-    std::vector<size_t> result_shape = broadcast_shapes(this->shape, other->shape);
-    size_t total_size = std::accumulate(result_shape.begin(), result_shape.end(), 1, std::multiplies<size_t>());
-    std::vector<T> result_data(total_size);
-    
-    for (size_t i = 0; i < total_size; ++i) {
-        std::vector<size_t> idx(result_shape.size());
-        size_t temp = i;
-        for (int j = result_shape.size() - 1; j >= 0; --j) {
-            idx[j] = temp % result_shape[j];
-            temp /= result_shape[j];
-        }
-        T a = this->data.size() == 1 ? this->data[0] : (*this)[idx];
-        T b = other->data.size() == 1 ? other->data[0] : (*other)[idx];
-        result_data[i] = a / b;
-    }
-    
-    auto out = std::make_shared<Tensor<T>>(result_data, result_shape, this->requires_grad || other->requires_grad,
-                                           std::vector<std::shared_ptr<Tensor<T>>>{this->shared_from_this(), other}, "/");
-    
-    out->_backward = [this, other, out]() {
-        if (this->requires_grad) {
-            for (size_t i = 0; i < this->data.size(); ++i) {
-                this->grad[i] += (1 / other->data[i]) * out->grad[i];
-            }
-        }
-        if (other->requires_grad) {
-            for (size_t i = 0; i < other->data.size(); ++i) {
-                other->grad[i] += (-this->data[i] / (other->data[i] * other->data[i])) * out->grad[i];
-            }
-        }
-    };
-    
-    return out;
-}
-// 矩阵相乘
-template <typename T>
-std::shared_ptr<Tensor<T>> Tensor<T>::matmul(const std::shared_ptr<Tensor<T>>& other) {
-    // 检查输入张量是否可以进行矩阵乘法
-    assert(this->shape.size() == 2 && other->shape.size() == 2 && "Both tensors must be 2D.");
-    assert(this->shape[1] == other->shape[0] && "Shapes are not aligned for matrix multiplication.");
-
-    // 结果矩阵的形状
-    std::vector<size_t> result_shape = {this->shape[0], other->shape[1]};
-    std::vector<T> result_data(result_shape[0] * result_shape[1], static_cast<T>(0));
-
-    // 进行矩阵乘法
-    for (size_t i = 0; i < this->shape[0]; ++i) {
-        for (size_t j = 0; j < other->shape[1]; ++j) {
-            for (size_t k = 0; k < this->shape[1]; ++k) {
-                result_data[i * result_shape[1] + j] += (*this)[{i, k}] * (*other)[{k, j}];
-            }
-        }
-    }
-
-    // 创建新张量并设置反向传播
-    auto out = std::make_shared<Tensor<T>>(result_data, result_shape, this->requires_grad || other->requires_grad,
-                                           std::vector<std::shared_ptr<Tensor<T>>>{this->shared_from_this(), other}, "matmul");
-
-    // 定义反向传播函数
-    out->_backward = [this, other, out]() {
-        if (this->requires_grad) {
-            // 计算对 this 的梯度：dL/dA = dL/dC * dC/dA，其中 dC/dA 是反向传播规则
-            for (size_t i = 0; i < this->shape[0]; ++i) {
-                for (size_t k = 0; k < this->shape[1]; ++k) {
-                    for (size_t j = 0; j < other->shape[1]; ++j) {
-                        this->grad[i * this->shape[1] + k] += out->grad[i * other->shape[1] + j] * (*other)[{k, j}];
-                    }
-                }
-            }
-        }
-        if (other->requires_grad) {
-            // 计算对 other 的梯度：dL/dB = dL/dC * dC/dB，其中 dC/dB 是反向传播规则
-            for (size_t k = 0; k < this->shape[1]; ++k) {
-                for (size_t j = 0; j < other->shape[1]; ++j) {
-                    for (size_t i = 0; i < this->shape[0]; ++i) {
-                        other->grad[k * other->shape[1] + j] += out->grad[i * other->shape[1] + j] * (*this)[{i, k}];
-                    }
-                }
-            }
-        }
-    };
-
-    return out;
-}
-// 反向传播
+// backward
 template <typename T>
 void Tensor<T>::backward() {
-    this->grad = std::vector<T>(this->data.size(), static_cast<T>(1));
-    std::vector<std::shared_ptr<Tensor<T>>> topo;
-    std::set<Tensor<T>*> visited;
-    
-    std::function<void(std::shared_ptr<Tensor<T>>)> build_topo = [&](std::shared_ptr<Tensor<T>> v) {
-        if (visited.find(v.get()) == visited.end()) {
-            visited.insert(v.get());
-            for (auto child : v->_prev) {
-                build_topo(child);
-            }
-            topo.push_back(v);
+    if (!requires_grad) {
+        throw std::runtime_error("This tensor does not require gradients");
+    }
+    /*
+    if (grad.empty()) {
+        grad.resize(data.size(), static_cast<T>(1)); // 初始化梯度为 1，适用于标量
+    }
+    */
+    // 如果当前 Tensor 是反向传播的起点
+    grad.assign(data.size(), static_cast<T>(1));  // 初始化梯度为 1
+    // 使用 lambda 函数进行 generation 排序
+    auto compare_generation = [](const std::shared_ptr<Function<T>>& a, const std::shared_ptr<Function<T>>& b) {
+        return a->generation < b->generation; // 按 generation 排序，较大的先处理
+    };
+
+    // Priority queue (heap) to sort Functions based on their generation (higher generation processed first)
+    std::priority_queue<std::shared_ptr<Function<T>>, std::vector<std::shared_ptr<Function<T>>>, decltype(compare_generation)> funcs(compare_generation);
+    std::set<std::shared_ptr<Function<T>>> seen;  // 防止重复处理
+
+    // Add a function to the heap if it's not already seen
+    auto add_func = [&](const std::shared_ptr<Function<T>>& f) {
+        if (seen.find(f) == seen.end()) {
+            funcs.push(f);  // 加入堆中
+            seen.insert(f); // 标记为已处理
         }
     };
-    
-    build_topo(this->shared_from_this());
-    
-    for (auto it = topo.rbegin(); it != topo.rend(); ++it) {
-        if ((*it)->_backward) {
-            (*it)->_backward();
+
+    // Start from the current tensor's creator function
+    if (creator) {
+        add_func(creator);
+    }
+
+    // Process the heap (topological sorting by generation)
+    while (!funcs.empty()) {
+        auto f = funcs.top();  // 从堆中取出 generation 最大的 Function
+        funcs.pop();
+
+        // Get the output gradient for the function
+        std::shared_ptr<Tensor<T>> grad_output = std::make_shared<Tensor<T>>(grad, shape, false, device);
+        auto grads = f->backward(grad_output);  // 调用反向传播，计算梯度
+
+        // 输出当前 function 节点的 generation 值
+        // std::cout << "Processing function with generation: " << f->generation << std::endl;
+
+        // Iterate over inputs and accumulate gradients
+        for (size_t i = 0; i < f->inputs.size(); ++i) {
+            auto input = f->inputs[i];
+            //std::cout << "Input data: " << input->data[0] << std::endl;
+            if (input->requires_grad) {
+                // 初始化梯度
+                if (input->grad.empty()) {
+                    input->grad = grads[i]->data;
+                } else {
+                    // 累加梯度
+                    std::transform(input->grad.begin(), input->grad.end(), grads[i]->data.begin(), input->grad.begin(), std::plus<T>());
+                }
+
+                // 将 input 的 creator 添加到堆中
+                if (input->creator) {
+                    //std::cout << "Input data: " << input->data[0] << std::endl;
+                    //std::cout << "Input Creator with generation: " << input->creator->generation << std::endl;
+                    add_func(input->creator);
+                }
+            }
         }
     }
 }
 
-// 辅助函数实现
+
+// 清零梯度
 template <typename T>
 void Tensor<T>::zero_grad() {
     if (requires_grad) {
@@ -291,32 +148,15 @@ void Tensor<T>::zero_grad() {
     }
 }
 
-template <typename T>
-void Tensor<T>::reshape(const std::vector<size_t>& new_shape) {
-    size_t total_size = std::accumulate(new_shape.begin(), new_shape.end(), 1, std::multiplies<size_t>());
-    assert(total_size == data.size() && "New shape must have the same number of elements as the original shape.");
-    shape = new_shape;
-    strides.resize(shape.size());
-    size_t stride = 1;
-    for (int i = shape.size() - 1; i >= 0; --i) {
-        strides[i] = stride;
-        stride *= shape[i];
-    }
-}
-
+// 打印张量内容
 template <typename T>
 void Tensor<T>::print() const {
-    std::cout << "Tensor(shape=[";
-    for (size_t i = 0; i < shape.size(); ++i) {
-        std::cout << shape[i];
-        if (i != shape.size() - 1) std::cout << ", ";
-    }
-    std::cout << "], data=[";
+    std::cout << "Tensor(";
     for (size_t i = 0; i < data.size(); ++i) {
-        std::cout << data[i];
-        if (i != data.size() - 1) std::cout << ", ";
+        std::cout << data[i] << (i < data.size() - 1 ? ", " : "");
     }
-    std::cout << "])" << std::endl;
+    std::cout << ")" << std::endl;
 }
+
 
 #endif  // TENSOR_IMPL_H
