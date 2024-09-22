@@ -158,5 +158,107 @@ void Tensor<T>::print() const {
     std::cout << ")" << std::endl;
 }
 
+// 张量转置
+template <typename T>
+void Tensor<T>::transpose() {
+    if (shape.size() != 2) {
+        throw std::invalid_argument("Only 2D tensors can be transposed.");
+    }
+
+    // 交换行和列的形状
+    std::swap(shape[0], shape[1]);
+
+    std::vector<T> new_data(data.size());
+
+    // 执行转置操作
+    for (size_t i = 0; i < shape[1]; ++i) { // 注意这里用交换后的形状
+        for (size_t j = 0; j < shape[0]; ++j) {
+            new_data[j * shape[1] + i] = data[i * shape[0] + j];
+        }
+    }
+
+    // 更新张量数据
+    data = std::move(new_data);
+
+    // 重新计算 strides
+    strides[0] = shape[1];
+    strides[1] = 1;
+}
+
+// 广播
+/*
+该函数根据目标形状创建一个新的张量，逐元素复制原始张量的数据。
+需要检查原始张量的形状是否可以广播到目标形状。
+*/
+template <typename T>
+std::shared_ptr<Tensor<T>> Tensor<T>::broadcast_to(const std::vector<size_t>& target_shape) const {
+    // 检查是否可以广播
+    if (shape.size() > target_shape.size()) {
+        throw std::invalid_argument("Cannot broadcast to a smaller number of dimensions.");
+    }
+
+    std::vector<size_t> new_shape = target_shape;
+    std::vector<T> new_data(std::accumulate(target_shape.begin(), target_shape.end(), 1, std::multiplies<size_t>()));
+
+    // 逐元素拷贝数据
+    for (size_t i = 0; i < new_data.size(); ++i) {
+        std::vector<size_t> indices(target_shape.size());
+        size_t temp = i;
+        for (size_t j = target_shape.size(); j > 0; --j) {
+            indices[j - 1] = temp % target_shape[j - 1];
+            temp /= target_shape[j - 1];
+        }
+
+        size_t old_index = 0;
+        for (size_t j = 0; j < shape.size(); ++j) {
+            if (shape[j] != 1) {
+                old_index = old_index * shape[j] + indices[indices.size() - shape.size() + j];
+            }
+        }
+
+        new_data[i] = data[old_index];
+    }
+
+    return std::make_shared<Tensor<T>>(new_data, new_shape, requires_grad, device);
+}
+
+// 广播的还原
+/*
+该函数用于将张量的形状还原到目标形状，主要用于反向传播中，将广播操作还原。
+它通过求和将张量的高维度折叠到目标形状。
+*/
+template <typename T>
+std::shared_ptr<Tensor<T>> Tensor<T>::sum_to(const std::vector<size_t>& target_shape) const {
+    if (shape == target_shape) {
+        // 如果形状一致，直接返回一个拷贝
+        return std::make_shared<Tensor<T>>(*this);
+    }
+
+    if (target_shape.size() > shape.size()) {
+        throw std::invalid_argument("Target shape has more dimensions than tensor shape.");
+    }
+
+    std::vector<size_t> new_shape = target_shape;
+    std::vector<T> new_data(std::accumulate(target_shape.begin(), target_shape.end(), 1, std::multiplies<size_t>()));
+
+    for (size_t i = 0; i < data.size(); ++i) {
+        std::vector<size_t> indices(shape.size());
+        size_t temp = i;
+        for (size_t j = shape.size(); j > 0; --j) {
+            indices[j - 1] = temp % shape[j - 1];
+            temp /= shape[j - 1];
+        }
+
+        size_t new_index = 0;
+        for (size_t j = 0; j < target_shape.size(); ++j) {
+            new_index = new_index * target_shape[j] + indices[indices.size() - target_shape.size() + j];
+        }
+
+        new_data[new_index] += data[i];
+    }
+
+    return std::make_shared<Tensor<T>>(new_data, new_shape, requires_grad, device);
+}
+
 
 #endif  // TENSOR_IMPL_H

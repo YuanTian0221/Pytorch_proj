@@ -57,6 +57,15 @@ public:
 
     // 清零梯度
     void zero_grad();
+
+    // 张量转置
+    void transpose();
+    
+    // 广播
+    std::shared_ptr<Tensor<T>> broadcast_to(const std::vector<size_t>& target_shape) const;
+
+    // 广播的还原
+    std::shared_ptr<Tensor<T>> sum_to(const std::vector<size_t>& target_shape) const;
 };
 
 #include "tensor_impl.h"  // 包含实现文件

@@ -12,12 +12,12 @@ int main() {
     auto tensor2 = std::make_shared<Tensor<float>>(data2, shape, true);  // 需要计算梯度
     auto tensor3 = std::make_shared<Tensor<float>>(data3, shape, true);  // 需要计算梯度
     // 创建 Add 函数
-    auto MatMul_func1 = std::make_shared<MatMul<float>>();
-    auto MatMul_func2 = std::make_shared<MatMul<float>>();
+    auto Add_func1 = std::make_shared<Add<float>>();
+    auto Add_func2 = std::make_shared<Add<float>>();
 
     // 前向传播
-    auto result = MatMul_func1->launch({tensor1, tensor2});
-    auto result2 = MatMul_func2->launch({tensor1, result});
+    auto result = Add_func1->launch({tensor1, tensor2});
+    auto result2 = Add_func2->launch({tensor1, result});
 
     // 打印前向传播结果
     std::cout << "Forward result: ";

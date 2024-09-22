@@ -1,4 +1,5 @@
 #include "common.h"
+#include "linear.h"
 
 int main() {
 
